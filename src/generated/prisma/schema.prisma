@@ -1,0 +1,330 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider     = "prisma-client-js"
+  output       = "../src/generated/prisma"
+  moduleFormat = "cjs"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ============ ENUMS ============
+
+enum Role {
+  CLIENT
+  COACH
+  ADMIN
+}
+
+enum BookingStatus {
+  PENDING
+  CONFIRMED
+  COMPLETED
+  CANCELLED
+}
+
+enum BookingAction {
+  CREATED
+  PAYMENT_CONFIRMED
+  CONFIRMED
+  RESCHEDULED
+  TRANSFERRED
+  CANCELLED
+  COMPLETED
+  REFUND_PROMPTED
+  REFUND_APPROVED
+  REFUND_DENIED
+  REFUND_SCHEDULED
+  REFUND_COMPLETED
+}
+
+enum OrderStatus {
+  PENDING
+  PAID
+  FAILED
+  REFUNDED
+}
+
+enum RefundStatus {
+  PENDING_DECISION
+  APPROVED
+  DENIED
+  SCHEDULED
+  COMPLETED
+  FAILED
+}
+
+enum RefundDecision {
+  APPROVE
+  DENY
+}
+
+enum PayoutStatus {
+  PENDING
+  RELEASED
+  WITHDRAWN
+}
+
+enum WithdrawalStatus {
+  PENDING
+  PROCESSING
+  PAID
+  FAILED
+}
+
+// ============ CORE IDENTITY ============
+
+model User {
+  id                 String              @id @default(cuid())
+  email              String              @unique
+  name               String
+  role               Role                @default(CLIENT)
+  passwordHash       String?
+  oauthProvider      String?
+  oauthId            String?
+  createdAt          DateTime            @default(now())
+  passwordResetCodes PasswordResetCode[]
+  coachProfile       Coach?
+  bookings           Booking[]
+  orders             Order[]
+  enrollments        Enrollment[]
+  reviews            Review[]
+  cancelledBookings  Booking[]           @relation("BookingCancelledBy")
+  bookingLogs        BookingLog[]
+}
+
+model Coach {
+  id          String   @id @default(cuid())
+  user        User     @relation(fields: [userId], references: [id])
+  userId      String   @unique
+  bio         String
+  specialties String[]
+  maxClients  Int      @default(15)
+
+  availability    Availability[]
+  bookings        Booking[]
+  payouts         Payout[]
+  withdrawals     Withdrawal[]
+  reviews         Review[]
+  payoutAccount   PayoutAccount?
+  profileImageUrl String?
+}
+
+model Availability {
+  id        String @id @default(cuid())
+  coach     Coach  @relation(fields: [coachId], references: [id])
+  coachId   String
+  dayOfWeek Int // 0-6
+  startTime String // "09:00"
+  endTime   String // "17:00"
+}
+
+// ============ CATALOG ============
+
+model Program {
+  id            String @id @default(cuid())
+  name          String
+  slug          String @unique
+  description   String
+  priceCents    Int
+  durationWeeks Int
+
+  enrollments Enrollment[]
+  orders      Order[]
+}
+
+model Enrollment {
+  id        String   @id @default(cuid())
+  client    User     @relation(fields: [clientId], references: [id])
+  clientId  String
+  program   Program  @relation(fields: [programId], references: [id])
+  programId String
+  startedAt DateTime @default(now())
+  progress  Json     @default("{}")
+}
+
+// ============ BOOKINGS ============
+
+model Booking {
+  id                 String         @id @default(cuid())
+  client             User           @relation(fields: [clientId], references: [id])
+  clientId           String
+  coach              Coach          @relation(fields: [coachId], references: [id])
+  coachId            String
+  order              Order?         @relation(fields: [orderId], references: [id])
+  orderId            String?        @unique
+  reason             String
+  scheduledAt        DateTime
+  status             BookingStatus  @default(PENDING)
+  clientCompletedAt  DateTime?
+  coachCompletedAt   DateTime?
+  cancelledBy        User?          @relation("BookingCancelledBy", fields: [cancelledById], references: [id])
+  cancelledById      String?
+  cancelledByRole    Role?
+  cancellationReason String?
+  cancelledAt        DateTime?
+  logs               BookingLog[]
+  review             Review?
+  refundRequest      RefundRequest?
+  payout             Payout?
+
+  createdAt      DateTime  @default(now())
+  callRoomUrl    String?   @unique
+  scheduledEndAt DateTime?
+}
+
+model BookingLog {
+  id              String        @id @default(cuid())
+  booking         Booking       @relation(fields: [bookingId], references: [id])
+  bookingId       String
+  action          BookingAction
+  performedBy     User?         @relation(fields: [performedById], references: [id])
+  performedById   String?
+  performedByRole Role?
+  reason          String?
+  metadata        Json?
+  createdAt       DateTime      @default(now())
+}
+
+model Review {
+  id        String   @id @default(cuid())
+  booking   Booking  @relation(fields: [bookingId], references: [id])
+  bookingId String   @unique
+  client    User     @relation(fields: [clientId], references: [id])
+  clientId  String
+  coach     Coach    @relation(fields: [coachId], references: [id])
+  coachId   String
+  rating    Int
+  comment   String?
+  createdAt DateTime @default(now())
+}
+
+// ============ PAYMENTS ============
+
+model Order {
+  id                    String         @id @default(cuid())
+  user                  User           @relation(fields: [userId], references: [id])
+  userId                String
+  program               Program        @relation(fields: [programId], references: [id])
+  programId             String
+  stripeSessionId       String         @unique
+  stripePaymentIntentId String?
+  amountCents           Int
+  status                OrderStatus    @default(PENDING)
+  paidAt                DateTime?
+  booking               Booking?
+  refundRequest         RefundRequest?
+  createdAt             DateTime       @default(now())
+}
+
+model RefundRequest {
+  id                String          @id @default(cuid())
+  booking           Booking         @relation(fields: [bookingId], references: [id])
+  bookingId         String          @unique
+  order             Order           @relation(fields: [orderId], references: [id])
+  orderId           String          @unique
+  status            RefundStatus    @default(PENDING_DECISION)
+  cancelledAt       DateTime
+  decisionDeadline  DateTime
+  coachDecision     RefundDecision?
+  decidedAt         DateTime?
+  scheduledRefundAt DateTime?
+  completedAt       DateTime?
+  stripeRefundId    String?
+  createdAt         DateTime        @default(now())
+}
+
+// ============ COACH EARNINGS ============
+
+model Payout {
+  id               String       @id @default(cuid())
+  booking          Booking      @relation(fields: [bookingId], references: [id])
+  bookingId        String       @unique
+  coach            Coach        @relation(fields: [coachId], references: [id])
+  coachId          String
+  grossAmountCents Int
+  platformFeeCents Int
+  taxAmountCents   Int
+  netAmountCents   Int
+  status           PayoutStatus @default(PENDING)
+  releasedAt       DateTime?
+  withdrawal       Withdrawal?  @relation(fields: [withdrawalId], references: [id])
+  withdrawalId     String?
+  createdAt        DateTime     @default(now())
+}
+
+model PayoutAccount {
+  id                 String   @id @default(cuid())
+  coach              Coach    @relation(fields: [coachId], references: [id])
+  coachId            String   @unique
+  stripeAccountId    String   @unique
+  onboardingComplete Boolean  @default(false)
+  payoutsEnabled     Boolean  @default(false)
+  createdAt          DateTime @default(now())
+}
+
+model Withdrawal {
+  id          String           @id @default(cuid())
+  coach       Coach            @relation(fields: [coachId], references: [id])
+  coachId     String
+  amountCents Int
+  status      WithdrawalStatus @default(PENDING)
+  payouts     Payout[]
+  requestedAt DateTime         @default(now())
+  processedAt DateTime?
+}
+
+// ============ CONTENT (admin-managed) ============
+
+model Lead {
+  id         String   @id @default(cuid())
+  email      String   @unique
+  source     String   @default("lead-magnet")
+  capturedAt DateTime @default(now())
+}
+
+model Testimonial {
+  id        String   @id @default(cuid())
+  quote     String
+  name      String
+  result    String
+  published Boolean  @default(false)
+  createdAt DateTime @default(now())
+}
+
+model BlogPost {
+  id        String   @id @default(cuid())
+  title     String
+  slug      String   @unique
+  body      String
+  tag       String
+  published Boolean  @default(false)
+  createdAt DateTime @default(now())
+}
+
+// ============ SYSTEM ============
+
+model RequestLog {
+  id         String   @id @default(cuid())
+  method     String
+  path       String
+  statusCode Int?
+  userId     String?
+  ip         String?
+  createdAt  DateTime @default(now())
+}
+
+model PasswordResetCode {
+  id        String    @id @default(cuid())
+  user      User      @relation(fields: [userId], references: [id])
+  userId    String
+  codeHash  String
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+}
